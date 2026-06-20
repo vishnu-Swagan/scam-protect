@@ -1,0 +1,35 @@
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+#root {
+  position: fixed;
+  inset: 0;
+}
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.app-scroll {
+  scrollbar-width: none;
+}
+textarea::placeholder {
+  color: #b4ab9e;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
