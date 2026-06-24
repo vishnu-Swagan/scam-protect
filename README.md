@@ -10,8 +10,8 @@ scam check** (Anthropic API) and a real **in-app Settings** screen.
 - **5 tabs + extras** — Home, Inbox (messages/email), Calls, Money (bank),
   Family, plus a Community alerts feed, an AI Analyzer, and a Message detail view.
 - **Live AI scam check** — paste any message / email / call transcript and it
-  calls the Anthropic API on the backend to return a risk score, verdict,
-  reasons, and advice. Also available as "Re-analyze with AI" on any message.
+  calls an LLM provider on the backend (NVIDIA or Anthropic) to return a risk
+  score, verdict, reasons, and advice. Also available as "Re-analyze with AI".
 - **"Try a live demo"** (Home) — simulate an incoming scam **call**, **text**, or
   **fraud transfer** and watch it get screened and blocked with an intercept sheet.
 - **Settings** (gear on Home) — accent color, dark mode, home layout
@@ -61,15 +61,25 @@ npm start                   # Express serves dist/ + /api/analyze on PORT (defau
 
 ## Configuration
 
-| Variable            | Required | Default              | Notes                                            |
-| ------------------- | -------- | -------------------- | ------------------------------------------------ |
-| `ANTHROPIC_API_KEY` | yes\*    | —                    | Needed for the live AI scam check.               |
-| `ANTHROPIC_MODEL`   | no       | `claude-sonnet-4-6`  | e.g. `claude-haiku-4-5-20251001` for speed/cost. |
-| `PORT`              | no       | `3000`               | Production Express port (`npm start`).           |
+The live AI scam check works with **NVIDIA** or **Anthropic**. Set one key — if
+`NVIDIA_API_KEY` is present it's used automatically; otherwise `ANTHROPIC_API_KEY`
+is used. `LLM_PROVIDER` forces a choice.
 
-\* Without a key the app runs fine; the AI scam check shows a graceful
-"couldn't analyze" state with a retry. Everything else (navigation, the demo,
-settings, the seeded message/call/transaction data) works offline.
+| Variable            | Required | Default                      | Notes                                                     |
+| ------------------- | -------- | ---------------------------- | --------------------------------------------------------- |
+| `NVIDIA_API_KEY`    | one of\* | —                            | Get one free at https://build.nvidia.com.                 |
+| `NVIDIA_MODEL`      | no       | `meta/llama-3.3-70b-instruct`| Any model id from build.nvidia.com.                       |
+| `ANTHROPIC_API_KEY` | one of\* | —                            | Anthropic alternative.                                    |
+| `ANTHROPIC_MODEL`   | no       | `claude-sonnet-4-6`          | e.g. `claude-haiku-4-5-20251001` for speed/cost.          |
+| `LLM_PROVIDER`      | no       | auto-detect                  | Force `nvidia` or `anthropic`.                            |
+| `PORT`              | no       | `3000`                       | Production Express port (`npm start`).                    |
+
+\* Provide **one** provider key. Without any key the app still runs fine; the AI
+scam check shows a graceful "couldn't analyze" state with a retry. Everything
+else (navigation, the demo, settings, the seeded data) works offline.
+
+NVIDIA's API is OpenAI-compatible, so it's called over plain HTTP — no extra
+dependency. The Anthropic SDK is only loaded if you use the Anthropic provider.
 
 ## Notes
 

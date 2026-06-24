@@ -1,5 +1,4 @@
 import 'dotenv/config';
-import Anthropic from '@anthropic-ai/sdk';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export interface ScamResult {
@@ -10,7 +9,18 @@ export interface ScamResult {
   advice: string;
 }
 
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
+// Provider selection: explicit LLM_PROVIDER wins; otherwise auto-detect from
+// whichever key is present (NVIDIA preferred if both are set).
+type Provider = 'nvidia' | 'anthropic';
+function activeProvider(): Provider {
+  const explicit = (process.env.LLM_PROVIDER || '').toLowerCase();
+  if (explicit === 'nvidia' || explicit === 'anthropic') return explicit;
+  if (process.env.NVIDIA_API_KEY) return 'nvidia';
+  return 'anthropic';
+}
+
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
 
 const SYSTEM = `You are a fraud-detection engine for a consumer scam-protection app called SecurityZ Scam Protect. You analyze a single message (SMS, email, or call transcript) for signs of a scam, phishing, or fraud, and you respond only with machine-readable JSON.`;
 
@@ -20,7 +30,7 @@ function buildPrompt(text: string): string {
 Message:
 """${text}"""
 
-Respond with ONLY a JSON object, no markdown, in exactly this shape:
+Respond with ONLY a JSON object, no markdown, no commentary, in exactly this shape:
 {"risk": <integer 0-100>, "verdict": "<Safe|Suspicious|Likely scam|Dangerous scam>", "category": "<short label e.g. Phishing, Smishing, Bank impersonation, Lottery scam, Safe>", "reasons": ["<short reason>", "<short reason>", "<short reason>"], "advice": "<one short sentence telling the user what to do>"}`;
 }
 
@@ -32,17 +42,61 @@ class HttpError extends Error {
   }
 }
 
-let client: Anthropic | null = null;
-function getClient(): Anthropic {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new HttpError(
-      'AI scam check is not configured. Set ANTHROPIC_API_KEY in the server environment.',
-      503,
-    );
+// ── provider calls ────────────────────────────────────────────────────────────
+
+// NVIDIA — OpenAI-compatible chat completions (no SDK needed; uses global fetch).
+async function completeNvidia(text: string): Promise<string> {
+  const key = process.env.NVIDIA_API_KEY;
+  if (!key) {
+    throw new HttpError('AI scam check is not configured. Set NVIDIA_API_KEY in the server environment.', 503);
   }
-  if (!client) client = new Anthropic({ apiKey });
-  return client;
+  let res: Response;
+  try {
+    res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: NVIDIA_MODEL,
+        temperature: 0.2,
+        top_p: 0.9,
+        max_tokens: 600,
+        messages: [
+          { role: 'system', content: SYSTEM },
+          { role: 'user', content: buildPrompt(text) },
+        ],
+      }),
+    });
+  } catch {
+    throw new HttpError('Could not reach the NVIDIA API. Check connectivity and try again.', 502);
+  }
+  if (!res.ok) {
+    let detail = '';
+    try {
+      detail = (await res.text()).slice(0, 200);
+    } catch {
+      /* ignore */
+    }
+    throw new HttpError(`NVIDIA API error (${res.status}). ${detail}`.trim(), res.status === 401 ? 503 : 502);
+  }
+  const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+  return data.choices?.[0]?.message?.content || '';
+}
+
+// Anthropic — Messages API (lazy-imports the SDK so NVIDIA-only deploys don't need it loaded).
+async function completeAnthropic(text: string): Promise<string> {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) {
+    throw new HttpError('AI scam check is not configured. Set ANTHROPIC_API_KEY in the server environment.', 503);
+  }
+  const { default: Anthropic } = await import('@anthropic-ai/sdk');
+  const client = new Anthropic({ apiKey: key });
+  const msg = await client.messages.create({
+    model: ANTHROPIC_MODEL,
+    max_tokens: 600,
+    system: SYSTEM,
+    messages: [{ role: 'user', content: buildPrompt(text) }],
+  });
+  return msg.content.map((b) => (b.type === 'text' ? b.text : '')).join('').trim();
 }
 
 /** Pull the JSON object out of the model's reply and coerce it into a ScamResult. */
@@ -69,25 +123,13 @@ function parseResult(raw: string): ScamResult {
   };
 }
 
-/** Run the live scam analysis against the Anthropic API. */
+/** Run the live scam analysis against the configured provider (NVIDIA or Anthropic). */
 export async function analyzeScam(text: string): Promise<ScamResult> {
   const trimmed = (text || '').trim();
   if (!trimmed) throw new HttpError('No text provided to analyze.', 400);
   if (trimmed.length > 8000) throw new HttpError('Message is too long to analyze.', 413);
 
-  const anthropic = getClient();
-  const msg = await anthropic.messages.create({
-    model: MODEL,
-    max_tokens: 500,
-    system: SYSTEM,
-    messages: [{ role: 'user', content: buildPrompt(trimmed) }],
-  });
-
-  const raw = msg.content
-    .map((block) => (block.type === 'text' ? block.text : ''))
-    .join('')
-    .trim();
-
+  const raw = activeProvider() === 'nvidia' ? await completeNvidia(trimmed) : await completeAnthropic(trimmed);
   return parseResult(raw);
 }
 
@@ -139,8 +181,7 @@ export function analyzeMiddleware() {
       send(res, 200, result);
     } catch (err) {
       const status = err instanceof HttpError ? err.status : 500;
-      const message =
-        err instanceof Error ? err.message : 'Something went wrong while analyzing.';
+      const message = err instanceof Error ? err.message : 'Something went wrong while analyzing.';
       // Surface a clean message; never leak stack traces or keys to the client.
       send(res, status, { error: message });
     }
